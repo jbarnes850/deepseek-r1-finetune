@@ -86,3 +86,36 @@ The fine-tuned model will be saved in `./fine_tuned_model` directory and can be 
 
 - Based on the [DataCamp DeepSeek R1 fine-tuning tutorial](https://www.datacamp.com/tutorial/fine-tuning-deepseek-r1-reasoning-model)
 - Uses the [DeepSeek R1 Distill Llama 8B model](https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-8B)
+
+## Troubleshooting
+
+### Common Warnings and Solutions
+
+1. **Tokenizer Deprecation Warning**
+   - This warning has been resolved by using the proper data collator and processing configuration
+   - The script now uses the recommended approach for SFTTrainer
+
+2. **bitsandbytes Warning**
+   - This warning is expected on Apple Silicon as bitsandbytes GPU support is not needed
+   - The script is optimized to use native MPS acceleration instead
+
+3. **Memory-Related Warnings**
+   - The script uses optimized memory settings for Apple Silicon
+   - Gradient checkpointing and proper batch sizes are configured
+   - KV-cache is disabled to prevent memory issues
+
+### Error Prevention
+
+The script includes several optimizations to prevent common errors:
+
+- Proper warning suppression for cleaner output
+- Optimized tokenizer and data collator configuration
+- Memory-efficient training settings
+- Apple Silicon-specific optimizations
+
+If you encounter any issues:
+
+1. Ensure you're using Python 3.11+ on Apple Silicon
+2. Verify all dependencies are correctly installed
+3. Check available system memory (32GB+ recommended)
+4. Monitor training through W&B dashboard for detailed metrics

@@ -11,6 +11,7 @@ References:
 import os
 import torch
 import platform
+import warnings
 import wandb
 from datasets import load_dataset
 from transformers import (
@@ -18,10 +19,16 @@ from transformers import (
     AutoTokenizer,
     TrainingArguments,
     pipeline,
-    logging
+    logging,
+    DataCollatorForLanguageModeling
 )
 from peft import LoraConfig, PeftModel
 from trl import SFTTrainer
+
+# Suppress specific warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+logging.set_verbosity_error()
 
 # Initialize wandb for experiment tracking
 wandb.init(
@@ -85,7 +92,7 @@ Final Answer: {sample['Response']}"""
             x["text"],
             truncation=True,
             padding="max_length",
-            max_length=1024,  # Reduced sequence length for faster training
+            max_length=1024,  # Reduced sequence length for faster training (for better results, use 2048)
             return_tensors=None,
         ),
         remove_columns=["text"],
@@ -102,12 +109,12 @@ def setup_model():
     """Setup the DeepSeek model with memory-efficient configuration for Apple Silicon."""
     model_name = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
     
-    # Set tokenizer configuration first
+    # Set tokenizer configuration 
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right"  # Set padding side before model loading
+    tokenizer.padding_side = "right" 
     
-    # Load model with optimized settings for M2/M3
+    # Load model with optimized settings for apple silicon
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         device_map="mps" if torch.backends.mps.is_available() else "auto",
@@ -135,21 +142,21 @@ def setup_trainer(model, tokenizer, train_dataset, eval_dataset):
         target_modules=["q_proj", "v_proj"]
     )
     
-    # Training arguments optimized for speed
+    # Training arguments optimized for speed and Apple Silicon
     training_args = TrainingArguments(
         output_dir="deepseek-r1-medical-finetuning",
         num_train_epochs=1,  # Single epoch for tutorial
-        per_device_train_batch_size=2,  # Increased batch size
-        gradient_accumulation_steps=4,  # Reduced steps
-        learning_rate=1e-4,  # Increased for faster convergence
+        per_device_train_batch_size=2,  
+        gradient_accumulation_steps=4,  
+        learning_rate=1e-4,  
         weight_decay=0.01,
         warmup_ratio=0.03,
         logging_steps=10,
         save_strategy="epoch",
         save_total_limit=1,
-        fp16=False,
+        fp16=False,  # Disable mixed precision for Apple Silicon
         bf16=False,
-        optim="adamw_torch",
+        optim="adamw_torch_fused",  # Use fused optimizer
         report_to="wandb",
         gradient_checkpointing=True,
         group_by_length=True,
@@ -160,16 +167,24 @@ def setup_trainer(model, tokenizer, train_dataset, eval_dataset):
         # Memory optimizations
         deepspeed=None,
         local_rank=-1,
-        ddp_find_unused_parameters=False,
+        ddp_find_unused_parameters=None,
         torch_compile=False,
     )
     
+    # Create data collator for proper padding
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer, 
+        mlm=False
+    )
+    
+    # Initialize trainer with processing_class instead of tokenizer
     trainer = SFTTrainer(
         model=model,
         train_dataset=train_dataset,
         peft_config=peft_config,
         args=training_args,
-        tokenizer=tokenizer,
+        data_collator=data_collator,
+        processing_class=None  # Let SFTTrainer handle processing
     )
     
     return trainer
