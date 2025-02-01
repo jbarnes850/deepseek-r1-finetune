@@ -24,7 +24,7 @@ fine_tuned_model/
 wandb/
 artifacts/
 results/
-deepsseek-rr1-medical-finetuning/
+deepseek-r1-medical-finetuning/
 
 # IDE specific files
 .idea/
