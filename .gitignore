@@ -25,6 +25,7 @@ wandb/
 artifacts/
 results/
 deepseek-r1-medical-finetuning/
+offload/
 
 # IDE specific files
 .idea/

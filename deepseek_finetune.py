@@ -191,22 +191,38 @@ def setup_trainer(model, tokenizer, train_dataset, eval_dataset):
 
 def test_model(model_path):
     """Test the fine-tuned model following DeepSeek's usage recommendations."""
+    # Create offload directory if it doesn't exist
+    os.makedirs("offload", exist_ok=True)
+    
+    # Load model with proper memory management for Apple Silicon
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
         device_map="auto",
-        trust_remote_code=True
+        trust_remote_code=True,
+        torch_dtype=torch.float16,
+        offload_folder="offload",  # Specify offload directory
+        offload_state_dict=True,   # Enable state dict offloading
+        use_cache=False,           # Disable KV-cache to save memory
+        max_memory={0: "24GB"},    # Limit memory usage
     )
     
     tokenizer = AutoTokenizer.from_pretrained(
         model_path,
-        trust_remote_code=True
+        trust_remote_code=True,
+        padding_side="right"
     )
     
+    # Initialize pipeline with optimized settings
     pipe = pipeline(
         "text-generation",
         model=model,
         tokenizer=tokenizer,
-        device_map="auto"
+        device_map="auto",
+        max_new_tokens=512,
+        temperature=0.6,      # DeepSeek recommended temperature
+        top_p=0.95,
+        repetition_penalty=1.15,
+        pad_token_id=tokenizer.eos_token_id
     )
     
     # Medical test case with recommended prompt format
@@ -214,24 +230,33 @@ def test_model(model_path):
 
 A 45-year-old patient presents with sudden onset chest pain, shortness of breath, and anxiety. The pain is described as sharp and worsens with deep breathing. What is the most likely diagnosis and what immediate tests should be ordered?"""
     
-    result = pipe(
-        test_problem,
-        max_new_tokens=512,
-        temperature=0.6,  # DeepSeek recommended temperature
-        top_p=0.95,
-        repetition_penalty=1.15
-    )
-    
-    print("\nTest Problem:", test_problem)
-    print("\nModel Response:", result[0]["generated_text"])
-    
-    # Log test results to wandb
-    wandb.log({
-        "test_example": wandb.Table(
-            columns=["Test Case", "Model Response"],
-            data=[[test_problem, result[0]["generated_text"]]]
+    try:
+        result = pipe(
+            test_problem,
+            max_new_tokens=512,
+            temperature=0.6,
+            top_p=0.95,
+            repetition_penalty=1.15
         )
-    })
+        
+        print("\nTest Problem:", test_problem)
+        print("\nModel Response:", result[0]["generated_text"])
+        
+        # Log test results to wandb
+        wandb.log({
+            "test_example": wandb.Table(
+                columns=["Test Case", "Model Response"],
+                data=[[test_problem, result[0]["generated_text"]]]
+            )
+        })
+    except Exception as e:
+        print(f"\nError during testing: {str(e)}")
+        print("Model was saved successfully but testing failed. You can load the model separately for testing.")
+    finally:
+        # Clean up
+        if os.path.exists("offload"):
+            import shutil
+            shutil.rmtree("offload")
 
 def main():
     """Main function to run the fine-tuning process."""
