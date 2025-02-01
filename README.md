@@ -1,6 +1,6 @@
 # DeepSeek R1 Fine-tuning for Apple Silicon
 
-This repository contains code for fine-tuning the DeepSeek R1 Distill Llama 8B model on Apple Silicon (M-series) machines. The implementation is optimized for the M3 Max with 36GB RAM and follows the [DataCamp tutorial](https://www.datacamp.com/tutorial/fine-tuning-deepseek-r1-reasoning-model) with Apple Silicon-specific optimizations.
+This repository contains code for fine-tuning the DeepSeek R1 Distill Llama 8B model on Apple Silicon (M-series) machines. The implementation is optimized for M1/M2/M3 with at least 16GB RAM with Apple Silicon-specific optimizations.
 
 ## Features
 
