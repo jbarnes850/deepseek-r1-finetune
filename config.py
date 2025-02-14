@@ -12,7 +12,8 @@ class Config:
     NUM_EPOCHS: int = 1
 
     # Dataset settings
-    DEFAULT_DATASET: str = "medical-o1-reasoning-SFT"
+    DEFAULT_DATASET: str = "FreedomIntelligence/medical-o1-reasoning-SFT"
+    DEFAULT_NAME: str = "en"
     DATASET_SPLIT_RATIO: float = 0.05  # Use 5% of data for faster tutorial run
 
     # LoRA settings

@@ -66,7 +66,7 @@ def prepare_dataset(tokenizer):
     Following DeepSeek's recommendation to include 'Please reason step by step'
     in the prompt for better reasoning performance.
     """
-    dataset = load_dataset("FreedomIntelligence/medical-o1-reasoning-SFT", "en")
+    dataset = load_dataset(config.DEFAULT_DATASET, config.DEFAULT_NAME)
     print(f"Dataset loaded with {len(dataset['train'])} training examples")
 
     def format_instruction(sample):
