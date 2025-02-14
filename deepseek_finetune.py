@@ -174,7 +174,7 @@ def prepare_dataset(tokenizer):
 
     print(f"\nUsing {len(train_dataset)} examples for training")
     print("\nSample formatted data:")
-    print(dataset["train"][0])
+    print(train_dataset["train"][0])
 
     return train_dataset
 
