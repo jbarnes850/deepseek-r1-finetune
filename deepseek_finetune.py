@@ -8,42 +8,50 @@ References:
 - Dataset: https://huggingface.co/datasets/FreedomIntelligence/medical-o1-reasoning-SFT
 """
 
-import os
+import token
+from regex import template          # type: ignore
 import torch
 import platform
 import warnings
 import wandb
-from datasets import load_dataset
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
+import os
+from transformers import (          # type: ignore
     TrainingArguments,
-    pipeline,
     logging,
-    DataCollatorForLanguageModeling
+    DataCollatorForLanguageModeling,
+    AutoTokenizer,
+    AutoModelForCausalLM,
 )
 from peft import LoraConfig, PeftModel
-from trl import SFTTrainer
+from trl import SFTTrainer          # type: ignore
+from datasets import load_dataset# type: ignore
+
+from utils import get_model, get_pipeline, get_tokenizer
+from test_model import test_saved_model
+from config import config
+import preprocess
 
 # Suppress specific warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 logging.set_verbosity_error()
 
-# Initialize wandb for experiment tracking
-wandb.init(
-    project="deepseek-r1-medical-finetuning",
-    config={
-        "model_name": "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
-        "learning_rate": 5e-5,
-        "batch_size": 1,
-        "num_epochs": 2,
-        "hardware": "Apple Silicon",
-        "dataset": "medical-o1-reasoning-SFT",
-        "lora_rank": 8,
-        "lora_alpha": 16
-    }
-)
+
+def do_wandb_init():
+    # Initialize wandb for experiment tracking
+    wandb.init(
+        project="deepseek-r1-medical-finetuning",
+        config={
+            "model_name": config.MODEL_NAME,
+            "learning_rate": config.LEARNING_RATE,
+            "batch_size": config.BATCH_SIZE,
+            "num_epochs": config.NUM_EPOCHS,
+            "hardware": "Apple Silicon",
+            "dataset": config.DEFAULT_DATASET,
+            "lora_rank": config.LORA_RANK  ,
+            "lora_alpha": config.LORA_ALPHA
+        }
+    )
 
 # Initialize device for Apple Silicon
 if platform.processor() == 'arm' and torch.backends.mps.is_available():
@@ -56,81 +64,24 @@ else:
     print("Using CPU")
     device = torch.device("cpu")
 
-def prepare_dataset(tokenizer):
-    """Prepare the medical reasoning dataset for training.
-    
-    Following DeepSeek's recommendation to include 'Please reason step by step'
-    in the prompt for better reasoning performance.
-    """
-    dataset = load_dataset("FreedomIntelligence/medical-o1-reasoning-SFT", "en")
-    print(f"Dataset loaded with {len(dataset['train'])} training examples")
-    
-    def format_instruction(sample):
-        # Following DeepSeek's recommended prompt format
-        return f"""Please reason step by step:
-
-Question: {sample['Question']}
-
-Let's solve this step by step:
-{sample['Complex_CoT']}
-
-Final Answer: {sample['Response']}"""
-    
-    # Use 5% of data for faster tutorial run
-    dataset = dataset["train"].train_test_split(train_size=0.05, test_size=0.01, seed=42)
-    
-    # Prepare training dataset
-    train_dataset = dataset["train"].map(
-        lambda x: {"text": format_instruction(x)},
-        remove_columns=dataset["train"].column_names,
-        num_proc=os.cpu_count()
-    )
-    
-    # Tokenize with optimized settings for speed
-    train_dataset = train_dataset.map(
-        lambda x: tokenizer(
-            x["text"],
-            truncation=True,
-            padding="max_length",
-            max_length=1024,  # Reduced sequence length for faster training (for better results, use 2048)
-            return_tensors=None,
-        ),
-        remove_columns=["text"],
-        num_proc=os.cpu_count()
-    )
-    
-    print(f"\nUsing {len(train_dataset)} examples for training")
-    print("\nSample formatted data:")
-    print(format_instruction(dataset["train"][0]))
-    
-    return train_dataset
-
 def setup_model():
     """Setup the DeepSeek model with memory-efficient configuration for Apple Silicon."""
-    model_name = "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"
-    
-    # Set tokenizer configuration 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.padding_side = "right" 
-    
+    model_name = config.MODEL_NAME
+
+    # Set tokenizer configuration
+    tokenizer = get_tokenizer(model_name, 'right')
+
+    device = "mps" if torch.backends.mps.is_available() else "auto"
     # Load model with optimized settings for apple silicon
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        device_map="mps" if torch.backends.mps.is_available() else "auto",
-        trust_remote_code=True,
-        torch_dtype=torch.float16,
-        use_cache=False,  # Disable KV-cache to save memory
-        max_memory={0: "24GB"},  # Reserve memory for training
-    )
-    
+    model = get_model(model_name, device_map=device, use_cache=True)
+
     # Apply memory optimizations
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
-    
+
     return model, tokenizer
 
-def setup_trainer(model, tokenizer, train_dataset, eval_dataset):
+def setup_trainer(model: AutoModelForCausalLM, tokenizer: AutoTokenizer, train_dataset, eval_dataset):
     """Setup the LoRA training configuration following DeepSeek's recommendations."""
     # LoRA configuration optimized for quick learning
     peft_config = LoraConfig(
@@ -141,19 +92,21 @@ def setup_trainer(model, tokenizer, train_dataset, eval_dataset):
         task_type="CAUSAL_LM",
         target_modules=["q_proj", "v_proj"]
     )
-    
     # Training arguments optimized for speed and Apple Silicon
     training_args = TrainingArguments(
-        output_dir="deepseek-r1-medical-finetuning",
+        output_dir=config.OUTPUT_DIR,
         num_train_epochs=1,  # Single epoch for tutorial
-        per_device_train_batch_size=2,  
-        gradient_accumulation_steps=4,  
-        learning_rate=1e-4,  
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        learning_rate=1e-4,
         weight_decay=0.01,
         warmup_ratio=0.03,
-        logging_steps=10,
-        save_strategy="epoch",
-        save_total_limit=1,
+        logging_steps=1,
+        logging_strategy="steps",
+        logging_dir="./logs",
+        save_strategy="steps",
+        save_steps=5,
+        # save_total_limit=1,
         fp16=False,  # Disable mixed precision for Apple Silicon
         bf16=False,
         optim="adamw_torch_fused",  # Use fused optimizer
@@ -163,20 +116,22 @@ def setup_trainer(model, tokenizer, train_dataset, eval_dataset):
         max_grad_norm=0.3,
         dataloader_num_workers=0,
         remove_unused_columns=True,
-        run_name="deepseek-medical-tutorial",
+        run_name=config.OUTPUT_DIR,
         # Memory optimizations
         deepspeed=None,
         local_rank=-1,
         ddp_find_unused_parameters=None,
         torch_compile=False,
+        use_mps_device=torch.backends.mps.is_available(),
+        disable_tqdm=False,
     )
-    
+
     # Create data collator for proper padding
     data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer, 
+        tokenizer=tokenizer,
         mlm=False
     )
-    
+
     # Initialize trainer with processing_class instead of tokenizer
     trainer = SFTTrainer(
         model=model,
@@ -186,101 +141,134 @@ def setup_trainer(model, tokenizer, train_dataset, eval_dataset):
         data_collator=data_collator,
         processing_class=None  # Let SFTTrainer handle processing
     )
-    
+
     return trainer
+
+def prepare_dataset(tokenizer):
+    """Prepare the coding dataset for training.
+
+    Following DeepSeek's recommendation to include 'Please reason step by step'
+    in the prompt for better reasoning performance.
+    """
+
+    if config.preprocess:
+        print("Preprocessing dataset...")
+        dataset = preprocess.preprocess_dataset()
+    else:
+        dataset = load_dataset(config.DEFAULT_DATASET, config.DEFAULT_NAME,trust_remote_code=True)
+    print(f"Dataset loaded with {len(dataset['train'])} training examples")
+
+    def format_instruction(msg_dict: dict) -> str:
+        return config.template.format(*[msg['content'] for msg in msg_dict])
+
+    train_dataset = dataset['train'].map(
+        lambda x: {"text": format_instruction(x["messages"])},
+        remove_columns=dataset['train'].column_names,
+        num_proc=os.cpu_count(),
+    )
+
+    # Tokenize with optimized settings for speed
+    train_dataset = train_dataset.map(
+        lambda x: tokenizer(
+            x['text'],
+            truncation=False,
+            padding="max_length",
+            max_length=16384,  # Reduced sequence length for faster training (for better results, use 2048)
+            return_tensors=None,
+        ),
+        # remove_columns=["text"],
+        num_proc=os.cpu_count(),
+    )
+
+    print(f"\nUsing {len(train_dataset)} examples for training")
+    print("\nSample formatted data:")
+    print(format_instruction(dataset['train'][0]['messages']))
+
+    return train_dataset
 
 def test_model(model_path):
     """Test the fine-tuned model following DeepSeek's usage recommendations."""
-    # Create offload directory if it doesn't exist
-    os.makedirs("offload", exist_ok=True)
-    
-    # Load model with proper memory management for Apple Silicon
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        device_map="auto",
-        trust_remote_code=True,
-        torch_dtype=torch.float16,
-        offload_folder="offload",  # Specify offload directory
-        offload_state_dict=True,   # Enable state dict offloading
-        use_cache=False,           # Disable KV-cache to save memory
-        max_memory={0: "24GB"},    # Limit memory usage
-    )
-    
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
-        trust_remote_code=True,
-        padding_side="right"
-    )
-    
-    # Initialize pipeline with optimized settings
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        device_map="auto",
-        max_new_tokens=512,
-        temperature=0.6,      # DeepSeek recommended temperature
-        top_p=0.95,
-        repetition_penalty=1.15,
-        pad_token_id=tokenizer.eos_token_id
-    )
-    
-    # Medical test case with recommended prompt format
-    test_problem = """Please reason step by step:
 
-A 45-year-old patient presents with sudden onset chest pain, shortness of breath, and anxiety. The pain is described as sharp and worsens with deep breathing. What is the most likely diagnosis and what immediate tests should be ordered?"""
-    
-    try:
-        result = pipe(
-            test_problem,
-            max_new_tokens=512,
-            temperature=0.6,
-            top_p=0.95,
-            repetition_penalty=1.15
-        )
-        
-        print("\nTest Problem:", test_problem)
-        print("\nModel Response:", result[0]["generated_text"])
-        
-        # Log test results to wandb
-        wandb.log({
-            "test_example": wandb.Table(
-                columns=["Test Case", "Model Response"],
-                data=[[test_problem, result[0]["generated_text"]]]
-            )
-        })
-    except Exception as e:
-        print(f"\nError during testing: {str(e)}")
-        print("Model was saved successfully but testing failed. You can load the model separately for testing.")
-    finally:
-        # Clean up
-        if os.path.exists("offload"):
-            import shutil
-            shutil.rmtree("offload")
+    test_saved_model(model_path)
+#     # Create offload directory if it doesn't exist
+#     os.makedirs("offload", exist_ok=True)
+
+#     # Load model with proper memory management for Apple Silicon
+#     kwargs = {
+#         "offload_folder": "offload",
+#         "offload_state_dict": True
+#     }
+#     model = get_model(model_path, kwargs=kwargs)
+
+#     tokenizer = get_tokenizer(model_path)
+
+#     # Initialize pipeline with optimized settings
+#     pipe = get_pipeline(model, tokenizer)
+
+#     # Medical test case with recommended prompt format
+#     test_problem = """Please reason step by step:
+
+# A 45-year-old patient presents with sudden onset chest pain, shortness of breath, and anxiety. The pain is described as sharp and worsens with deep breathing. What is the most likely diagnosis and what immediate tests should be ordered?"""
+
+#     try:
+#         result = pipe(
+#             test_problem,
+#             # max_new_tokens=512,
+#             # temperature=0.6,
+#             # top_p=0.95,
+#             # repetition_penalty=1.15
+#         )
+
+#         print("\nTest Problem:", test_problem)
+#         print("\nModel Response:", result[0]["generated_text"])
+
+#         # Log test results to wandb
+#         wandb.log({
+#             "test_example": wandb.Table(
+#                 columns=["Test Case", "Model Response"],
+#                 data=[[test_problem, result[0]["generated_text"]]]
+#             )
+#         })
+#     except Exception as e:
+#         print(f"\nError during testing: {str(e)}")
+#         print("Model was saved successfully but testing failed. You can load the model separately for testing.")
+#     finally:
+#         # Clean up
+#         if os.path.exists("offload"):
+#             import shutil
+#             shutil.rmtree("offload")
+
 
 def main():
     """Main function to run the fine-tuning process."""
+    do_wandb_init()
     try:
         print("\nSetting up model...")
         model, tokenizer = setup_model()
-        
+
         print("\nPreparing dataset...")
         train_dataset = prepare_dataset(tokenizer)
-        
+
         print("\nSetting up trainer...")
         trainer = setup_trainer(model, tokenizer, train_dataset, None)
-        
+
         print("\nStarting training...")
-        trainer.train()
-        
+        try:
+            trainer.train(resume_from_checkpoint=True)
+        except ValueError as e:
+            print(f"Unable to load from checkpoint: {e}")
+            print("Starting training from the beginning...")
+            trainer.train()
+
         print("\nSaving model...")
         trainer.model.save_pretrained("./fine_tuned_model")
-        
+        tokenizer.save_pretrained("./fine_tuned_model")
+
         print("\nTesting model...")
         test_model("./fine_tuned_model")
-        
+
     finally:
         wandb.finish()
 
 if __name__ == "__main__":
-    main() 
+    main()
