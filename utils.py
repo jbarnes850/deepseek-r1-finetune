@@ -6,18 +6,18 @@ from transformers import (      # type: ignore
     pipeline
 )
 from datasets import Dataset, DatasetDict       # type: ignore
-from typing import Literal
+from typing import Any, Literal
 import torch
 from config import config
 
-def get_tokenizer(model_name: str, padding_side: Literal['left']|Literal['right'] = "right", *args, **kwargs) -> AutoTokenizer:
+def get_tokenizer(model_name: str, padding_side: Literal['left']|Literal['right'] = "right", *args, **kwargs) -> Any:
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "right"
 
     return tokenizer
 
-def get_model(model_name: str, device_map: str = "auto", use_cache: bool = False, max_memory: str|dict = "27GB", *args, **kwargs) -> AutoModelForCausalLM:
+def get_model(model_name: str, device_map: str = "auto", use_cache: bool = False, max_memory: str|dict = "27GB", *args, **kwargs) -> Any:
     if isinstance(max_memory, str):
         max_memory = "".join(max_memory.strip().split(" ")).upper()     # allow for sloppy input
         max_memory = {0: max_memory}

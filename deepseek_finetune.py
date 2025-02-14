@@ -8,24 +8,28 @@ References:
 - Dataset: https://huggingface.co/datasets/FreedomIntelligence/medical-o1-reasoning-SFT
 """
 
-import os
 import token
+from regex import template
 import torch
 import platform
 import warnings
 import wandb
-from datasets import load_dataset   # type: ignore
+import os
 from transformers import (          # type: ignore
     TrainingArguments,
     logging,
-    DataCollatorForLanguageModeling
+    DataCollatorForLanguageModeling,
+    AutoTokenizer,
+    AutoModelForCausalLM,
 )
 from peft import LoraConfig, PeftModel
-from trl import SFTTrainer          # type: ignore
+from trl import SFTTrainer
+from datasets import load_dataset# type: ignore
 
 from utils import get_model, get_pipeline, get_tokenizer
 from test_model import test_saved_model
 from config import config
+import preprocess
 
 # Suppress specific warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -60,56 +64,6 @@ else:
     print("Using CPU")
     device = torch.device("cpu")
 
-def prepare_dataset(tokenizer):
-    """Prepare the medical reasoning dataset for training.
-
-    Following DeepSeek's recommendation to include 'Please reason step by step'
-    in the prompt for better reasoning performance.
-    """
-    dataset = load_dataset(config.DEFAULT_DATASET, config.DEFAULT_NAME)
-    print(f"Dataset loaded with {len(dataset['train'])} training examples")
-
-    def format_instruction(sample):
-        # Following DeepSeek's recommended prompt format
-        return f"""Please reason step by step:
-
-Question: {sample['Question']}
-
-Let's solve this step by step:
-{sample['Complex_CoT']}
-
-Final Answer: {sample['Response']}"""
-
-    # Use 5% of data for faster tutorial run
-    dataset = dataset["train"].train_test_split(train_size=0.05, test_size=0.01, seed=42)
-    print(f"For demo purposes, will use {len(dataset['train'])} training examples now.")
-
-    # Prepare training dataset
-    train_dataset = dataset["train"].map(
-        lambda x: {"text": format_instruction(x)},
-        remove_columns=dataset["train"].column_names,
-        num_proc=os.cpu_count()
-    )
-
-    # Tokenize with optimized settings for speed
-    train_dataset = train_dataset.map(
-        lambda x: tokenizer(
-            x["text"],
-            truncation=False,
-            padding="max_length",
-            max_length=8192,  # Reduced sequence length for faster training (for better results, use 2048)
-            return_tensors=None,
-        ),
-        #remove_columns=["text"],
-        num_proc=os.cpu_count()
-    )
-
-    print(f"\nUsing {len(train_dataset)} examples for training")
-    print("\nSample formatted data:")
-    print(format_instruction(dataset["train"][0]))
-
-    return train_dataset
-
 def setup_model():
     """Setup the DeepSeek model with memory-efficient configuration for Apple Silicon."""
     model_name = config.MODEL_NAME
@@ -127,7 +81,7 @@ def setup_model():
 
     return model, tokenizer
 
-def setup_trainer(model, tokenizer, train_dataset, eval_dataset):
+def setup_trainer(model: AutoModelForCausalLM, tokenizer: AutoTokenizer, train_dataset, eval_dataset):
     """Setup the LoRA training configuration following DeepSeek's recommendations."""
     # LoRA configuration optimized for quick learning
     peft_config = LoraConfig(
@@ -138,10 +92,9 @@ def setup_trainer(model, tokenizer, train_dataset, eval_dataset):
         task_type="CAUSAL_LM",
         target_modules=["q_proj", "v_proj"]
     )
-
     # Training arguments optimized for speed and Apple Silicon
     training_args = TrainingArguments(
-        output_dir="deepseek-r1-medical-finetuning",
+        output_dir=config.OUTPUT_DIR,
         num_train_epochs=1,  # Single epoch for tutorial
         per_device_train_batch_size=2,
         gradient_accumulation_steps=4,
@@ -163,7 +116,7 @@ def setup_trainer(model, tokenizer, train_dataset, eval_dataset):
         max_grad_norm=0.3,
         dataloader_num_workers=0,
         remove_unused_columns=True,
-        run_name="deepseek-medical-tutorial",
+        run_name=config.OUTPUT_DIR,
         # Memory optimizations
         deepspeed=None,
         local_rank=-1,
@@ -191,6 +144,39 @@ def setup_trainer(model, tokenizer, train_dataset, eval_dataset):
 
     return trainer
 
+def prepare_dataset(tokenizer):
+    """Prepare the coding dataset for training.
+
+    Following DeepSeek's recommendation to include 'Please reason step by step'
+    in the prompt for better reasoning performance.
+    """
+
+    if config.preprocess:
+        print("Preprocessing dataset...")
+        dataset = preprocess.preprocess_dataset()
+    else:
+        dataset = load_dataset(config.DEFAULT_DATASET, config.DEFAULT_NAME,trust_remote_code=True)
+    print(f"Dataset loaded with {len(dataset['train'])} training examples")
+
+
+    # Tokenize with optimized settings for speed
+    train_dataset = dataset['train'].map(
+        lambda x: tokenizer(
+            config.template.format(*[msg['content'] for msg in x["messages"]]),
+            truncation=False,
+            padding="max_length",
+            max_length=16384,  # Reduced sequence length for faster training (for better results, use 2048)
+            return_tensors=None,
+        ),
+        remove_columns=["reasoning","answer"],
+        num_proc=os.cpu_count(),
+    )
+
+    print(f"\nUsing {len(train_dataset)} examples for training")
+    print("\nSample formatted data:")
+    print(dataset["train"][0])
+
+    return train_dataset
 
 def test_model(model_path):
     """Test the fine-tuned model following DeepSeek's usage recommendations."""
