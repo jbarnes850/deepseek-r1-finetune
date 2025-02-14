@@ -41,12 +41,12 @@ so make sure your list is properly ordered.
 """
 import os
 import sys
-from transformers import (
+from transformers import (              # type: ignore
     AutoModelForCausalLM,
     AutoTokenizer,
     pipeline,
 )
-from datasets import load_dataset
+from datasets import load_dataset       # type: ignore
 
 from config import config
 

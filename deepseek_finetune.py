@@ -9,7 +9,7 @@ References:
 """
 
 import token
-from regex import template
+from regex import template          # type: ignore
 import torch
 import platform
 import warnings
@@ -23,7 +23,7 @@ from transformers import (          # type: ignore
     AutoModelForCausalLM,
 )
 from peft import LoraConfig, PeftModel
-from trl import SFTTrainer
+from trl import SFTTrainer          # type: ignore
 from datasets import load_dataset# type: ignore
 
 from utils import get_model, get_pipeline, get_tokenizer
@@ -158,23 +158,31 @@ def prepare_dataset(tokenizer):
         dataset = load_dataset(config.DEFAULT_DATASET, config.DEFAULT_NAME,trust_remote_code=True)
     print(f"Dataset loaded with {len(dataset['train'])} training examples")
 
+    def format_instruction(msg_dict: dict) -> str:
+        return config.template.format(*[msg['content'] for msg in msg_dict])
+
+    train_dataset = dataset['train'].map(
+        lambda x: {"text": format_instruction(x["messages"])},
+        remove_columns=dataset['train'].column_names,
+        num_proc=os.cpu_count(),
+    )
 
     # Tokenize with optimized settings for speed
-    train_dataset = dataset['train'].map(
+    train_dataset = train_dataset.map(
         lambda x: tokenizer(
-            config.template.format(*[msg['content'] for msg in x["messages"]]),
+            x['text'],
             truncation=False,
             padding="max_length",
             max_length=16384,  # Reduced sequence length for faster training (for better results, use 2048)
             return_tensors=None,
         ),
-        remove_columns=["reasoning","answer"],
+        # remove_columns=["text"],
         num_proc=os.cpu_count(),
     )
 
     print(f"\nUsing {len(train_dataset)} examples for training")
     print("\nSample formatted data:")
-    print(train_dataset["train"][0])
+    print(format_instruction(dataset['train'][0]['messages']))
 
     return train_dataset
 
